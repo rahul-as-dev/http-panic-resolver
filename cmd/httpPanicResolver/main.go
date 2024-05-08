@@ -4,19 +4,26 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 )
 
 func main() {
 	mux := createMultiplex()
-	log.Fatal(http.ListenAndServe(":7020", recoverHttpMiddleware(mux)))
+	log.Fatal(http.ListenAndServe(":7020", recoverHttpMiddleware(mux, true)))
 }
 
-func recoverHttpMiddleware(muxHandler http.Handler) http.HandlerFunc {
+func recoverHttpMiddleware(muxHandler http.Handler, isDev bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
 				log.Println(err)
-				http.Error(w, "Something went wrong", http.StatusInternalServerError)
+				errorStack := debug.Stack()
+				log.Println(string(errorStack))
+				if !isDev {
+					http.Error(w, "Something went wrong", http.StatusInternalServerError)
+					return
+				}
+				fmt.Fprintf(w, "<h2>Panic: %v</h2><pre>%s</pre>", err, string(errorStack))
 			}
 		}()
 		muxHandler.ServeHTTP(w, r)
