@@ -17,16 +17,22 @@ func recoverHttpMiddleware(muxHandler http.Handler, isDev bool) http.HandlerFunc
 		defer func() {
 			if err := recover(); err != nil {
 				log.Println(err)
-				errorStack := debug.Stack()
+				errorStack := debug.Stack() // returns a formatted stack trace of the goroutines that calls it
 				log.Println(string(errorStack))
 				if !isDev {
 					http.Error(w, "Something went wrong", http.StatusInternalServerError)
 					return
 				}
+				// write 500 in case of any panic
+				w.WriteHeader(http.StatusInternalServerError)
 				fmt.Fprintf(w, "<h2>Panic: %v</h2><pre>%s</pre>", err, string(errorStack))
 			}
 		}()
-		muxHandler.ServeHTTP(w, r)
+		//to rewrite the partial response, make a copy of responseWriter
+		nwr := &newResponseWriter{ResponseWriter: w}
+		muxHandler.ServeHTTP(nwr, r)
+		nwr.flush()
+
 	}
 }
 
@@ -36,6 +42,34 @@ func createMultiplex() http.Handler {
 	mux.HandleFunc("/panic", PanicHandler)
 	mux.HandleFunc("/panic-reset", ResetResponseHandler)
 	return mux
+}
+
+// A wrapper for http.responseWriter
+// cons - stores all the write buffer in memory instead of streaming it to client as the http.ResponseWriter does
+type newResponseWriter struct {
+	http.ResponseWriter
+	writes [][]byte
+	status int
+}
+
+func (nwr *newResponseWriter) Write(b []byte) (int, error) {
+	nwr.writes = append(nwr.writes, b)
+	return len(b), nil
+}
+func (nwr *newResponseWriter) WriteHeader(status int) {
+	nwr.status = status
+}
+func (nwr *newResponseWriter) flush() error {
+	if nwr.status != 0 {
+		nwr.ResponseWriter.WriteHeader(nwr.status)
+	}
+	for _, write := range nwr.writes {
+		_, err := nwr.ResponseWriter.Write(write)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func HomePageHandler(responseWriter http.ResponseWriter, request *http.Request) {
