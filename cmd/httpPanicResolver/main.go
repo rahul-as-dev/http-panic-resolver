@@ -1,10 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"github.com/alecthomas/chroma/v2/formatters/html"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"runtime/debug"
+	"strconv"
 )
 
 func main() {
@@ -23,9 +30,10 @@ func recoverHttpMiddleware(muxHandler http.Handler, isDev bool) http.HandlerFunc
 					http.Error(w, "Something went wrong", http.StatusInternalServerError)
 					return
 				}
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				// write 500 in case of any panic
 				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "<h2>Panic: %v</h2><pre>%s</pre>", err, string(errorStack))
+				_, _ = fmt.Fprintf(w, "<h2>Panic: %v</h2>\n<pre>%s</pre>", err, makeLinks(string(errorStack)))
 			}
 		}()
 		//to rewrite the partial response, make a copy of responseWriter
@@ -41,6 +49,7 @@ func createMultiplex() http.Handler {
 	mux.HandleFunc("/", HomePageHandler)
 	mux.HandleFunc("/panic", PanicHandler)
 	mux.HandleFunc("/panic-reset", ResetResponseHandler)
+	mux.HandleFunc("/debug/", SourceCodeHandler)
 	return mux
 }
 
@@ -53,7 +62,9 @@ type newResponseWriter struct {
 }
 
 func (nwr *newResponseWriter) Write(b []byte) (int, error) {
-	nwr.writes = append(nwr.writes, b)
+	c := make([]byte, len(b))
+	copy(c, b) // see https://github.com/gophercises/recover_chroma/issues/1
+	nwr.writes = append(nwr.writes, c)
 	return len(b), nil
 }
 func (nwr *newResponseWriter) WriteHeader(status int) {
@@ -87,4 +98,46 @@ func ResetResponseHandler(responseWriter http.ResponseWriter, request *http.Requ
 }
 func panickingFunctions() {
 	panic("I'm panicking")
+}
+func SourceCodeHandler(responseWriter http.ResponseWriter, request *http.Request) {
+	path := request.FormValue("source")
+	lineNumber := request.FormValue("line")
+	line, err := strconv.Atoi(lineNumber)
+	if err != nil {
+		line = -1
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		http.Error(responseWriter, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	b := bytes.NewBuffer(nil)
+	_, err = io.Copy(b, file)
+	if err != nil {
+		http.Error(responseWriter, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var lineRange [][2]int
+	if line > 0 {
+		lineRange = append(lineRange, [2]int{line, line})
+	}
+	formatter := html.New(
+		html.TabWidth(2),
+		html.WithLineNumbers(true),
+		html.LineNumbersInTable(true),
+		html.WithLinkableLineNumbers(true, ""),
+		html.HighlightLines(lineRange),
+	)
+	lex := lexers.Get("go")
+	iter, err := lex.Tokenise(nil, b.String())
+	if err != nil {
+		log.Println(err)
+	}
+	style := styles.Get("pastie") // https://swapoff.org/chroma/playground/
+	if style == nil {
+		style = styles.Fallback
+	}
+	fmt.Fprint(responseWriter, "<style>pre {front-size: 1.2em}</style>")
+	_ = formatter.Format(responseWriter, style, iter)
+	//_ = quick.Highlight(responseWriter, b.String(), "go", "html", "monokai")
 }
