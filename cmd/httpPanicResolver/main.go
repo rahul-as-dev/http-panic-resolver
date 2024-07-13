@@ -31,7 +31,8 @@ func recoverHttpMiddleware(muxHandler http.Handler, isDev bool) http.HandlerFunc
 		//to rewrite the partial response, make a copy of responseWriter
 		nwr := &newResponseWriter{ResponseWriter: w}
 		muxHandler.ServeHTTP(nwr, r)
-		nwr.flush() // O(n^2) extra overhead by using wrapper
+		nwr.flush()
+
 	}
 }
 
@@ -45,7 +46,6 @@ func createMultiplex() http.Handler {
 
 // A wrapper for http.responseWriter
 // cons - stores all the write buffer in memory instead of streaming it to client as the http.ResponseWriter does
-// Solution - See https://pkg.go.dev/net/http#Flusher
 type newResponseWriter struct {
 	http.ResponseWriter
 	writes [][]byte
@@ -53,8 +53,6 @@ type newResponseWriter struct {
 }
 
 func (nwr *newResponseWriter) Write(b []byte) (int, error) {
-	// TODO - flush writes to the client once writes exceed some thresh hold, then only write to the writes
-	// to prevent memory overload
 	nwr.writes = append(nwr.writes, b)
 	return len(b), nil
 }
